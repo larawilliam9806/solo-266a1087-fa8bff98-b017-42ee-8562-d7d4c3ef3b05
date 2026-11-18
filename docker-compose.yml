@@ -1,0 +1,35 @@
+services:
+  source:
+    build: .
+    command: ["source"]
+    ports:
+      - "9000:9000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/healthz', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  collector:
+    build: .
+    command: ["collector"]
+    environment:
+      SOURCE_BASE_URL: http://source:9000
+      COLLECTOR_DATA_DIR: /srv/data
+      SOURCE_HTTP_TIMEOUT: "30"
+      AUTO_RESUME: "true"
+    ports:
+      - "8000:8000"
+    volumes:
+      - collector-data:/srv/data
+    depends_on:
+      source:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  collector-data:
