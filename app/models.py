@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from datetime import date as date_type
 from enum import StrEnum
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 STATION_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
@@ -101,6 +102,76 @@ class TaskView(BaseModel):
 class ErrorResponse(BaseModel):
     detail: str
     state: str | None = None
+
+
+class ComparisonRequest(BaseModel):
+    target_station: str = Field(..., examples=["54511"])
+    reference_stations: list[str] = Field(..., min_length=2, examples=[["54512", "54513"]])
+    date: str = Field(..., examples=["2026-11-17"])
+    threshold_c: float = Field(..., gt=0, examples=[2.0])
+
+    @field_validator("target_station", "reference_stations")
+    @classmethod
+    def valid_stations(cls, value):
+        if isinstance(value, str):
+            values = [value]
+        else:
+            values = value
+        for station in values:
+            if not STATION_RE.fullmatch(station):
+                raise ValueError("station must match [A-Za-z0-9_-]{1,32}")
+        return value
+
+    @field_validator("date")
+    @classmethod
+    def valid_date_value(cls, value: str) -> str:
+        return valid_date(value)
+
+    @field_validator("threshold_c")
+    @classmethod
+    def finite_threshold(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("threshold_c must be a finite positive number")
+        return value
+
+    @model_validator(mode="after")
+    def distinct_participants(self) -> "ComparisonRequest":
+        references = list(self.reference_stations)
+        if len(set(references)) != len(references):
+            raise ValueError("reference_stations must not contain duplicates")
+        if self.target_station in references:
+            raise ValueError("target_station must not appear in reference_stations")
+        return self
+
+
+class PackageDigest(BaseModel):
+    station: str
+    date: str
+    task_id: str
+    source_revision: str | None = None
+    package_path: str
+    size: int
+    sha256: str
+
+
+class SuspectedDrift(BaseModel):
+    time: str
+    target_temperature_c: float
+    reference_median_c: float
+    difference_c: float
+    threshold_c: float
+
+
+class ComparisonResponse(BaseModel):
+    target_station: str
+    reference_stations: list[str]
+    date: str
+    threshold_c: float
+    slot_count: int
+    comparable_times: list[str]
+    non_comparable_times: list[str]
+    suspected_drifts: list[SuspectedDrift]
+    packages: list[PackageDigest]
 
 
 def sha256_file(path) -> str:

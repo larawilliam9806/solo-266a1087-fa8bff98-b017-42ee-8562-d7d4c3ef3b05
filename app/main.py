@@ -9,11 +9,20 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 
 from . import __version__
 from .collector import Collector
+from .comparison import ComparisonParseError, PackageUnavailableError, run_comparison
 from .config import Settings
-from .models import ErrorResponse, StartTaskRequest, TaskState, TaskView
+from .models import (
+    ComparisonRequest,
+    ComparisonResponse,
+    ErrorResponse,
+    StartTaskRequest,
+    TaskState,
+    TaskView,
+)
 from .store import utcnow
 
 
@@ -198,6 +207,38 @@ def create_app(settings: Settings | None = None, collector: Collector | None = N
             },
         )
 
+    @app.post(
+        "/comparisons",
+        response_model=ComparisonResponse,
+        responses={
+            409: {"model": ErrorResponse},
+            422: {"model": ErrorResponse},
+        },
+    )
+    async def compare_stations(body: ComparisonRequest):
+        try:
+            # All blocking work (file reads, SHA-256, tar/CSV parsing, medians)
+            # runs in a worker thread: refreshes and other API calls keep being
+            # served while the comparison is calculated.  The participating
+            # packages and their digests are fixed inside this call, so a refresh
+            # that completes concurrently can neither alter the result nor wait
+            # on it.
+            result = await run_in_threadpool(
+                run_comparison,
+                collector.store,
+                body.target_station,
+                body.reference_stations,
+                body.date,
+                body.threshold_c,
+            )
+        except PackageUnavailableError as exc:
+            raise HTTPException(409, detail=str(exc))
+        except ComparisonParseError as exc:
+            # Structural failure: the whole request fails, never with a partial
+            # conclusion.
+            raise HTTPException(422, detail=str(exc))
+        return result
+
     @app.get("/")
     async def index(request: Request):
         base = str(request.base_url).rstrip("/")
@@ -216,6 +257,7 @@ def create_app(settings: Settings | None = None, collector: Collector | None = N
                 "POST /tasks/{id}/refresh",
                 "GET /tasks/{id}/events",
                 "GET /tasks/{id}/package",
+                "POST /comparisons {target_station,reference_stations,date,threshold_c}",
             ],
         }
 
